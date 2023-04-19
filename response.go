@@ -16,60 +16,47 @@ import (
 	"google.golang.org/protobuf/proto"
 )
 
-const (
-	ReturnSuccessCode      int32 = 200 // Operation success code
-	ReturnErrorCode        int32 = 500 // System error identifier code appears for operation
-	ReturnFailCode         int32 = 400 // Operation failure identifier
-	ReturnUnauthorizedCode int32 = 401 // Operation Not Authenticated Error Identifier
-	ReturnForbiddenCode    int32 = 403 // Operation unauthorized error identification code
-	ReturnNotFoundCode     int32 = 404 // The request address does not have an identifier
-
-	ReturnSuccessMessage      string = "操作成功"   // 200
-	ReturnErrorMessage        string = "系统错误"   // 500
-	ReturnFailMessage         string = "操作失败"   // 400
-	ReturnUnauthorizedMessage string = "操作未授权"  // 401
-	ReturnForbiddenMessage    string = "操作没有权限" // 403
-	ReturnNotFoundMessage     string = "未知操作"   // 404
-)
-
-// Response Http error response
-type Response struct {
-	Code    int32  `json:"code"`
-	Message string `json:"message"`
-	Data    any    `json:"data"`
+// ProtoResponse 接受 gRPC 成功时返回的数据结构体
+type ProtoResponse struct {
+	Code any `json:"code"`
+	Msg  any `json:"msg"`
+	Data any `json:"data"`
 }
 
-// CustomMarshaler Custom marshaler
-type CustomMarshaler struct{ runtime.JSONPb }
+// Response Http 服务返回的结构体
+type Response struct {
+	Code int    `json:"code"`
+	Msg  string `json:"msg"`
+	Data any    `json:"data"`
+}
+
+// CustomMarshaller Custom marshaller
+type CustomMarshaller struct{ runtime.JSONPb }
 
 // Marshal Custom marshal
-func (m *CustomMarshaler) Marshal(v interface{}) ([]byte, error) { return nil, nil }
+func (m *CustomMarshaller) Marshal(v interface{}) ([]byte, error) { return nil, nil }
 
 // HttpErrorHandler Http service error handler
 func HttpErrorHandler(ctx context.Context, mux *runtime.ServeMux, m runtime.Marshaler, w http.ResponseWriter, req *http.Request, err error) {
 
-	r := &Response{}
-	pb := status.Convert(err).Proto()
-	pbMessage := pb.GetMessage()
-	pbCode := pb.GetCode()
-	pbDetail := pb.GetDetails()
-
-	switch pbCode {
-	case int32(codes.OK):
-		r.Success(w, ReturnSuccessMessage, nil)
-	case int32(codes.NotFound):
-		r.NotFound(w, pbMessage, pbDetail)
-	case int32(codes.PermissionDenied):
-		r.Forbidden(w, pbMessage, pbDetail)
-	case int32(codes.Unauthenticated):
-		r.Unauthorized(w, pbMessage, pbDetail)
-	case int32(codes.FailedPrecondition):
-		r.Fail(w, pbMessage, pbDetail)
-	case int32(codes.InvalidArgument):
-		r.Fail(w, pbMessage, pbDetail)
-	default:
-		r.Error(w, pbMessage, pbDetail)
+	r := &Response{
+		Code: HTTPStatusFromCode(status.Convert(err).Code()),
+		Msg:  status.Convert(err).Proto().GetMessage(),
 	}
+	// 判断返回的 details 是否为空，如果是，则设置成空的结构体对象
+	if status.Convert(err).Proto().GetDetails() == nil {
+		r.Data = struct{}{}
+	} else {
+		r.Data = status.Convert(err).Proto().GetDetails()
+	}
+	// 转译成返回 http 请求的 json 数据格式
+	jsonStr, err := json.Marshal(r)
+	if err != nil {
+		log.Println("系统错误，错误信息：" + err.Error())
+		r.Response(http.StatusInternalServerError, w, "系统错误")
+		return
+	}
+	r.Response(r.Code, w, string(jsonStr))
 
 }
 
@@ -77,118 +64,74 @@ func HttpErrorHandler(ctx context.Context, mux *runtime.ServeMux, m runtime.Mars
 func HttpSuccessResponseModifier(ctx context.Context, w http.ResponseWriter, pbMsg proto.Message) error {
 
 	r := &Response{}
-	r.Success(w, ReturnSuccessMessage, pbMsg)
+	pr := &ProtoResponse{}
+
+	// 转译 protobuf 数据为 json 数据
+	pbJson := protojson.Format(pbMsg)
+	err := json.Unmarshal([]byte(pbJson), pr)
+	if err != nil {
+		log.Println("系统错误，错误信息：" + err.Error())
+		r.Response(http.StatusInternalServerError, w, "系统错误")
+		return nil
+	}
+
+	// 如果 grpc 没有传递数据，则为空的结构体对象数据
+	if pr.Data == nil {
+		pr.Data = struct{}{}
+	} else {
+		// 如果 grpc 有传递 Data 数据
+		// 过滤 protojson 转译后数据自带的 "@type" 字段
+		data, ok := pr.Data.(map[string]interface{})
+		if ok {
+			delete(data, "@type")
+		}
+		pr.Data = data
+	}
+
+	// 如果 grpc 没有传递状态码，则默认为 0
+	if pr.Code == nil {
+		pr.Code = 0
+	} else {
+		// 如果有传递 code 状态码，转成数字类型
+		codeStr, ok := pr.Code.(string)
+		if ok {
+			if codeInt, err := strconv.Atoi(codeStr); err == nil {
+				pr.Code = codeInt
+			}
+		}
+	}
+
+	// 如果 grpc 没有传递 msg 数据，则默认为空字符串
+	if pr.Msg == nil {
+		pr.Msg = "操作成功"
+	}
+
+	// 转译成返回 http 请求的 json 数据格式
+	jsonStr, err := json.Marshal(pr)
+	if err != nil {
+		log.Println("系统错误，错误信息：" + err.Error())
+		r.Response(http.StatusInternalServerError, w, "系统错误")
+		return nil
+	}
+	r.Response(http.StatusOK, w, string(jsonStr))
 	return nil
 
 }
 
-// Response Uniform method for handling returned http api requests.
-// The uniform http status returned is 200, in json format, and other errors are specified by the parameter Code.
-func (r *Response) Response(w http.ResponseWriter, response *Response) {
-
-	w.WriteHeader(http.StatusOK)
-	b, err := json.Marshal(response)
-	if err != nil {
-		r.responseMarshalError(w, response)
-		return
-	}
-	r.writeWithLog(w.Write, b)
-
+// Response Method for handling returned http api requests.
+// In json format, and other errors are specified by the parameter Code.
+func (r *Response) Response(httpStatus int, w http.ResponseWriter, response string) {
+	w.WriteHeader(httpStatus)
+	r.write(w.Write, []byte(response))
 }
 
-// responseMarshalError Handling json escape failures
-func (*Response) responseMarshalError(w http.ResponseWriter, r *Response) {
-
-	w.WriteHeader(http.StatusOK)
-	b := []byte("{\"code\":" + strconv.Itoa(int(ReturnErrorCode)) + ",\"message\":\"" + ReturnErrorMessage + "\",\"data\":{}}")
-	r.writeWithLog(w.Write, b)
-
-}
-
-// writeWithLog Logging write errors
-func (*Response) writeWithLog(write func([]byte) (int, error), body []byte) {
+// write Logging write errors
+func (*Response) write(write func([]byte) (int, error), body []byte) {
 
 	_, err := write(body)
 	if err != nil {
 		log.Printf("http response write failed: %v", err)
 	}
-
-}
-
-// Success Operation success method
-func (r *Response) Success(w http.ResponseWriter, msg string, data any) {
-
-	r.Response(w, &Response{
-		Code:    ReturnSuccessCode,
-		Message: msg,
-		Data:    data,
-	})
-
-}
-
-// NotFound 404 NotFound
-func (r *Response) NotFound(w http.ResponseWriter, msg string, data any) {
-
-	r.Response(w, &Response{
-		Code:    ReturnNotFoundCode,
-		Message: msg,
-		Data:    data,
-	})
-
-}
-
-// Forbidden Operation no permission error
-func (r *Response) Forbidden(w http.ResponseWriter, msg string, data any) {
-
-	r.Response(w, &Response{
-		Code:    ReturnForbiddenCode,
-		Message: msg,
-		Data:    data,
-	})
-
-}
-
-// Unauthorized Operation not authenticated error
-func (r *Response) Unauthorized(w http.ResponseWriter, msg string, data any) {
-
-	r.Response(w, &Response{
-		Code:    ReturnUnauthorizedCode,
-		Message: msg,
-		Data:    data,
-	})
-
-}
-
-// ParamError Parameter error method
-func (r *Response) ParamError(w http.ResponseWriter, msg string, data any) {
-
-	r.Response(w, &Response{
-		Code:    ReturnFailCode,
-		Message: "参数错误",
-		Data:    data,
-	})
-
-}
-
-// Error Unknown error method
-func (r *Response) Error(w http.ResponseWriter, msg string, data any) {
-
-	r.Response(w, &Response{
-		Code:    ReturnErrorCode,
-		Message: msg,
-		Data:    data,
-	})
-
-}
-
-// Fail Operation failure method
-func (r *Response) Fail(w http.ResponseWriter, msg string, data any) {
-
-	r.Response(w, &Response{
-		Code:    ReturnFailCode,
-		Message: msg,
-		Data:    data,
-	})
 
 }
 
@@ -239,7 +182,7 @@ func HTTPStatusFromCode(code codes.Code) int {
 
 }
 
-// MarshalJSON Marshal to json response format
+// MarshalJSON 格式化当请求成功时，只有一个 response 结构体
 func (r *Response) MarshalJSON() ([]byte, error) {
 
 	mm := runtime.JSONPb{
