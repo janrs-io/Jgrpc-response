@@ -7,3 +7,32 @@
 - 请求成功时候，处理后只有一个 `response`
 
 # 使用
+
+引入包
+
+```shell
+go get "github.com/janrs-io/Jgrpc-response"
+```
+
+在 `grpc-gateway` 启动 `http` 服务的中间价添加以下方法：
+
+```shell
+mux := runtime.NewServeMux(
+	runtime.WithErrorHandler(Jgrpc_response.HttpErrorHandler),
+	runtime.WithForwardResponseOption(Jgrpc_response.HttpSuccessResponseModifier),
+	runtime.WithMarshalerOption("*", &Jgrpc_response.CustomMarshaller{}),
+)
+```
+
+`proto` 设置统一返回的数据格式为以下格式：
+
+```protobuf
+// http 返回数据
+message Response {
+  int64 code = 1;
+  string msg = 2;
+  google.protobuf.Any data = 3;
+}
+```
+
+**当 `rpc` 按照以上格式返回后，添加了 `http` 处理中间件会自动处理 `rpc` 返回的数据然后返回给前端。**
