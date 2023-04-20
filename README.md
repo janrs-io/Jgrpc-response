@@ -14,7 +14,7 @@
 go get "github.com/janrs-io/Jgrpc-response"
 ```
 
-在 `grpc-gateway` 启动 `http` 服务的中间价添加以下方法：
+在 `grpc-gateway` 启动 `http` 服务的中间件添加以下方法：
 
 ```shell
 mux := runtime.NewServeMux(
