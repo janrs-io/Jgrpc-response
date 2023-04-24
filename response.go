@@ -16,6 +16,15 @@ import (
 	"google.golang.org/protobuf/proto"
 )
 
+var (
+	protoTypeUrlStr string = "@type"
+	defaultCode     int    = 0
+	defaultMsg      string = "操作成功"
+)
+
+type defaultData struct {
+}
+
 // ProtoResponse 接受 gRPC 成功时返回的数据结构体
 type ProtoResponse struct {
 	Code any `json:"code"`
@@ -45,7 +54,7 @@ func HttpErrorHandler(ctx context.Context, mux *runtime.ServeMux, m runtime.Mars
 	}
 	// 判断返回的 details 是否为空，如果是，则设置成空的结构体对象
 	if status.Convert(err).Proto().GetDetails() == nil {
-		r.Data = struct{}{}
+		r.Data = &defaultData{}
 	} else {
 		r.Data = status.Convert(err).Proto().GetDetails()
 	}
@@ -66,33 +75,36 @@ func HttpSuccessResponseModifier(ctx context.Context, w http.ResponseWriter, pbM
 	r := &Response{}
 	pr := &ProtoResponse{}
 
-	// 转译 protobuf 数据为 json 数据
-	pbJson := protojson.Format(pbMsg)
-	err := json.Unmarshal([]byte(pbJson), pr)
+	b, err := protojson.Marshal(pbMsg)
 	if err != nil {
 		log.Println("系统错误，错误信息：" + err.Error())
 		r.Response(http.StatusInternalServerError, w, "系统错误")
 		return nil
 	}
-
+	// 序列化 json 数据到需要返回的结构体
+	err = json.Unmarshal(b, pr)
+	if err != nil {
+		log.Println("系统错误，错误信息：" + err.Error())
+		r.Response(http.StatusInternalServerError, w, "系统错误")
+		return nil
+	}
 	// 如果 grpc 没有传递数据，则为空的结构体对象数据
 	if pr.Data == nil {
-		pr.Data = struct{}{}
+		pr.Data = &defaultData{}
 	} else {
 		// 如果 grpc 有传递 Data 数据
 		// 过滤 protojson 转译后数据自带的 "@type" 字段
 		data, ok := pr.Data.(map[string]interface{})
 		if ok {
-			delete(data, "@type")
+			pr.Data = r.FilterTypeUrl(data)
 		}
-		pr.Data = data
 	}
-
 	// 如果 grpc 没有传递状态码，则默认为 0
 	if pr.Code == nil {
-		pr.Code = 0
+		pr.Code = defaultCode
 	} else {
 		// 如果有传递 code 状态码，转成数字类型
+		// 只有数字类型的字符串才能成功转译，否则报错
 		codeStr, ok := pr.Code.(string)
 		if ok {
 			if codeInt, err := strconv.Atoi(codeStr); err == nil {
@@ -103,7 +115,7 @@ func HttpSuccessResponseModifier(ctx context.Context, w http.ResponseWriter, pbM
 
 	// 如果 grpc 没有传递 msg 数据，则默认为空字符串
 	if pr.Msg == nil {
-		pr.Msg = "操作成功"
+		pr.Msg = defaultMsg
 	}
 
 	// 转译成返回 http 请求的 json 数据格式
@@ -116,6 +128,20 @@ func HttpSuccessResponseModifier(ctx context.Context, w http.ResponseWriter, pbM
 	r.Response(http.StatusOK, w, string(jsonStr))
 	return nil
 
+}
+
+// FilterTypeUrl 过滤 proto message 的 @type 参数
+func (r *Response) FilterTypeUrl(data map[string]any) map[string]any {
+	delete(data, protoTypeUrlStr)
+	if len(data) > 0 {
+		for _, v := range data {
+			mapData, ok := v.(map[string]any)
+			if ok {
+				r.FilterTypeUrl(mapData)
+			}
+		}
+	}
+	return data
 }
 
 // Response Method for handling returned http api requests.
