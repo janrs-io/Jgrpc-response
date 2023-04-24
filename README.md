@@ -24,14 +24,14 @@ mux := runtime.NewServeMux(
 )
 ```
 
-`proto` 设置统一返回的数据格式为以下格式：
+`grpc proto` 设置统一返回的数据格式为以下格式：
 
 ```protobuf
-// http 返回数据
+// grpc 返回数据。自动解析到对应的 http 返回数据
 message Response {
-  int64 code = 1;
-  string msg = 2;
-  google.protobuf.Any data = 3;
+  int64 Code = 1[json_name = "code"];
+  string Msg = 2[json_name = "msg"];
+  google.protobuf.Any ProtoAnyData = 3[json_name = "data"];
 }
 ```
 
