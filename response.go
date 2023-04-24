@@ -18,12 +18,12 @@ import (
 
 var (
 	protoTypeUrlStr string = "@type"
+	protoDataKeyStr string = "data"
 	defaultCode     int    = 0
 	defaultMsg      string = "操作成功"
 )
 
-type defaultData struct {
-}
+type defaultData struct{}
 
 // ProtoResponse 接受 gRPC 成功时返回的数据结构体
 type ProtoResponse struct {
@@ -96,7 +96,7 @@ func HttpSuccessResponseModifier(ctx context.Context, w http.ResponseWriter, pbM
 		// 过滤 protojson 转译后数据自带的 "@type" 字段
 		data, ok := pr.Data.(map[string]interface{})
 		if ok {
-			pr.Data = r.FilterTypeUrl(data)
+			pr.Data = r.FilterDataKey(r.FilterTypeUrl(data))
 		}
 	}
 	// 如果 grpc 没有传递状态码，则默认为 0
@@ -138,6 +138,18 @@ func (r *Response) FilterTypeUrl(data map[string]any) map[string]any {
 			mapData, ok := v.(map[string]any)
 			if ok {
 				r.FilterTypeUrl(mapData)
+			}
+		}
+	}
+	return data
+}
+
+// FilterDataKey 过滤 `data` 参数关键字
+func (r *Response) FilterDataKey(data map[string]any) map[string]any {
+	for k, v := range data {
+		if vData, ok := v.(map[string]any); ok {
+			if dataValue, exists := vData[protoDataKeyStr]; exists {
+				data[k] = dataValue
 			}
 		}
 	}
