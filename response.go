@@ -6,7 +6,6 @@ import (
 	"log"
 	"net/http"
 	"reflect"
-	"strconv"
 
 	"github.com/grpc-ecosystem/grpc-gateway/v2/runtime"
 	"google.golang.org/grpc/codes"
@@ -17,20 +16,10 @@ import (
 )
 
 var (
-	protoTypeUrlStr string = "@type"
-	protoDataKeyStr string = "data"
-	defaultCode     int    = 0
-	defaultMsg      string = "操作成功"
+	defaultMsg = "操作成功"
 )
 
 type defaultData struct{}
-
-// ProtoResponse 接受 gRPC 成功时返回的数据结构体
-type ProtoResponse struct {
-	Code any `json:"code"`
-	Msg  any `json:"msg"`
-	Data any `json:"data"`
-}
 
 // Response Http 服务返回的结构体
 type Response struct {
@@ -73,87 +62,16 @@ func HttpErrorHandler(ctx context.Context, mux *runtime.ServeMux, m runtime.Mars
 func HttpSuccessResponseModifier(ctx context.Context, w http.ResponseWriter, pbMsg proto.Message) error {
 
 	r := &Response{}
-	pr := &ProtoResponse{}
-
 	b, err := protojson.Marshal(pbMsg)
 	if err != nil {
 		log.Println("系统错误，错误信息：" + err.Error())
 		r.Response(http.StatusInternalServerError, w, "系统错误")
 		return nil
 	}
-	// 序列化 json 数据到需要返回的结构体
-	err = json.Unmarshal(b, pr)
-	if err != nil {
-		log.Println("系统错误，错误信息：" + err.Error())
-		r.Response(http.StatusInternalServerError, w, "系统错误")
-		return nil
-	}
-	// 如果 grpc 没有传递数据，则为空的结构体对象数据
-	if pr.Data == nil {
-		pr.Data = &defaultData{}
-	} else {
-		// 如果 grpc 有传递 Data 数据
-		// 过滤 protojson 转译后数据自带的 "@type" 字段
-		data, ok := pr.Data.(map[string]interface{})
-		if ok {
-			pr.Data = r.FilterDataKey(r.FilterTypeUrl(data))
-		}
-	}
-	// 如果 grpc 没有传递状态码，则默认为 0
-	if pr.Code == nil {
-		pr.Code = defaultCode
-	} else {
-		// 如果有传递 code 状态码，转成数字类型
-		// 只有数字类型的字符串才能成功转译，否则报错
-		codeStr, ok := pr.Code.(string)
-		if ok {
-			if codeInt, err := strconv.Atoi(codeStr); err == nil {
-				pr.Code = codeInt
-			}
-		}
-	}
-
-	// 如果 grpc 没有传递 msg 数据，则默认为空字符串
-	if pr.Msg == nil {
-		pr.Msg = defaultMsg
-	}
-
-	// 转译成返回 http 请求的 json 数据格式
-	jsonStr, err := json.Marshal(pr)
-	if err != nil {
-		log.Println("系统错误，错误信息：" + err.Error())
-		r.Response(http.StatusInternalServerError, w, "系统错误")
-		return nil
-	}
-	r.Response(http.StatusOK, w, string(jsonStr))
+	respByte := []byte(`{"code":200,"msg":"` + defaultMsg + `","data":` + string(b) + `}`)
+	r.Response(http.StatusOK, w, string(respByte))
 	return nil
 
-}
-
-// FilterTypeUrl 过滤 proto message 的 @type 参数
-func (r *Response) FilterTypeUrl(data map[string]any) map[string]any {
-	delete(data, protoTypeUrlStr)
-	if len(data) > 0 {
-		for _, v := range data {
-			mapData, ok := v.(map[string]any)
-			if ok {
-				r.FilterTypeUrl(mapData)
-			}
-		}
-	}
-	return data
-}
-
-// FilterDataKey 过滤 `data` 参数关键字
-func (r *Response) FilterDataKey(data map[string]any) map[string]any {
-	for k, v := range data {
-		if vData, ok := v.(map[string]any); ok {
-			if dataValue, exists := vData[protoDataKeyStr]; exists {
-				data[k] = dataValue
-			}
-		}
-	}
-	return data
 }
 
 // Response Method for handling returned http api requests.
